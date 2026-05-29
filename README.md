@@ -92,6 +92,48 @@ All settings from `settings.json` **except** the auth token and history. Include
 
 ---
 
+### `server_stats.json` — Server-side statistics (all devices combined)
+Retrieved from `https://core.aquavoice.com/users/stats/` using the token stored in `settings.json`.
+This is the same data shown in the Aqua Voice app under Statistics.
+
+> **Important:** This data is aggregated across **all your devices** — unlike the local history which only reflects the current machine.
+
+| Field | Description |
+|-------|-------------|
+| `stats.total_words` | Lifetime word count across all devices |
+| `stats.total_characters` | Total characters dictated |
+| `stats.average_wpm` | Your average words per minute |
+| `stats.faster_than_percent` | Percentile ranking vs. all Aqua Voice users |
+| `stats.time_saved_hours` | Estimated hours saved vs. typing |
+| `stats.sessions_count` | Total dictation sessions ever |
+| `stats.current_streak_days` | Current daily usage streak |
+| `stats.longest_streak_days` | All-time longest streak |
+| `stats.level` | Gamification level (name, progress %, words to next) |
+| `stats.top_app` | App you dictate into most |
+| `daily_activity[]` | Full per-day history: `date`, `word_count`, `session_count` (since account creation) |
+| `user.plan` | Subscription type (free / pro) |
+| `user.member_since` | Account creation date |
+
+> **Multi-device note:** Aqua Voice does not expose a device list API endpoint. The `mic_timings.json` file (local) is the only place where individual microphone devices are tracked. The server-side stats are device-agnostic.
+
+---
+
+### `server_profile.json` — Account profile
+Retrieved from `https://core.aquavoice.com/users/profile/`.
+
+| Field | Description |
+|-------|-------------|
+| `id` | User ID |
+| `email` | Account email |
+| `name` | Display name |
+| `subscription_status` | active / inactive |
+| `subscription.plan_type` | pro / free |
+| `subscription.billing_interval` | annual / monthly |
+| `token_balance` | API token usage balance |
+| `referral_code` | Your referral code |
+
+---
+
 ### `audio_files.json` — Audio file inventory
 Metadata for every `.wav` file in the audio directory:
 

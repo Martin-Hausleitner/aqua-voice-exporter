@@ -10,6 +10,8 @@ import os
 import sys
 import csv
 import argparse
+import urllib.request
+import urllib.error
 from pathlib import Path
 from datetime import datetime, timezone
 from collections import defaultdict
@@ -43,6 +45,31 @@ def load_mic_timings(data_dir: Path) -> dict:
         return {}
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+API_BASE = "https://core.aquavoice.com"
+
+
+def fetch_api(endpoint: str, token: str) -> dict | None:
+    url = f"{API_BASE}/{endpoint.lstrip('/')}"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+
+
+def fetch_server_stats(token: str) -> dict | None:
+    return fetch_api("/users/stats/", token)
+
+
+def fetch_server_profile(token: str) -> dict | None:
+    return fetch_api("/users/profile/", token)
 
 
 def list_audio_files(data_dir: Path) -> list[dict]:
@@ -183,6 +210,25 @@ def write_csv(path: Path, rows: list[dict]):
     print(f"  wrote {path}")
 
 
+def print_server_summary(stats: dict):
+    s = stats.get("stats", {})
+    u = stats.get("user", {})
+    level = s.get("level", {}).get("current", {})
+    print("\n  SERVER STATS (all devices combined)")
+    print(f"    Total words (server):  {s.get('total_words', 0):,}")
+    print(f"    Total sessions:        {s.get('sessions_count', 0):,}")
+    print(f"    Average WPM:           {s.get('average_wpm')}  (faster than {s.get('faster_than_percent')}% of users)")
+    print(f"    Time saved:            {s.get('time_saved_hours')} hours")
+    print(f"    Current streak:        {s.get('current_streak_days')} days")
+    print(f"    Longest streak:        {s.get('longest_streak_days')} days")
+    print(f"    Level:                 {level.get('number')} — {level.get('name')} ({s.get('level', {}).get('progress_percent')}%)")
+    print(f"    Top app:               {s.get('top_app')}")
+    print(f"    Member since:          {u.get('member_since')}  plan: {u.get('plan_label')}")
+    daily = stats.get("daily_activity", [])
+    if daily:
+        print(f"    Daily history:         {len(daily)} days tracked (server-side, all devices)")
+
+
 def print_summary(summary: dict, daily: list[dict], devices: list[dict]):
     print("\n" + "═" * 60)
     print("  AQUA VOICE — EXPORT SUMMARY")
@@ -231,6 +277,10 @@ def main():
         help="Skip listing audio files (faster on large libraries)",
     )
     parser.add_argument(
+        "--no-api", action="store_true",
+        help="Skip server API calls (offline mode)",
+    )
+    parser.add_argument(
         "--data-dir",
         help="Custom path to Aqua Voice data directory",
     )
@@ -255,8 +305,19 @@ def main():
     daily = compute_daily_stats(history)
     summary = compute_summary(settings, history, audio_files, devices)
 
+    # Server stats (optional, requires internet)
+    token = settings.get("token")
+    server_stats = None
+    server_profile = None
+    if token and not args.no_api:
+        print("Fetching server stats…")
+        server_stats = fetch_server_stats(token)
+        server_profile = fetch_server_profile(token)
+
     # Print human-readable summary
     print_summary(summary, daily, devices)
+    if server_stats:
+        print_server_summary(server_stats)
     print()
 
     # Write JSON
@@ -267,6 +328,10 @@ def main():
     write_json(out / "config.json", config)
     if audio_files:
         write_json(out / "audio_files.json", audio_files)
+    if server_stats:
+        write_json(out / "server_stats.json", server_stats)
+    if server_profile:
+        write_json(out / "server_profile.json", server_profile)
 
     # Optional CSV
     if args.csv:
