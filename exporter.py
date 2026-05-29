@@ -72,6 +72,41 @@ def fetch_server_profile(token: str) -> dict | None:
     return fetch_api("/users/profile/", token)
 
 
+def fetch_transcript_customizations(token: str) -> dict | None:
+    return fetch_api("/users/transcript-customizations/", token)
+
+
+def fetch_referral_stats(token: str) -> dict | None:
+    data = fetch_api("/users/referral-stats/", token)
+    referrals = fetch_api("/users/direct-referrals/", token)
+    if data and referrals:
+        data["direct_referrals"] = referrals.get("referrals", [])
+    return data
+
+
+def fetch_device_settings(token: str, device_id: str, app_version: str = "unknown") -> dict | None:
+    url = f"{API_BASE}/users/devices/handshake/"
+    payload = json.dumps({
+        "deviceId": device_id,
+        "platform": "darwin",
+        "appVersion": app_version,
+    }).encode()
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+
+
 def list_audio_files(data_dir: Path) -> list[dict]:
     audio_dir = data_dir / "audio"
     if not audio_dir.exists():
@@ -305,14 +340,37 @@ def main():
     daily = compute_daily_stats(history)
     summary = compute_summary(settings, history, audio_files, devices)
 
-    # Server stats (optional, requires internet)
+    # Server data (optional, requires internet)
     token = settings.get("token")
+    device_id = settings.get("uniqueDeviceId")
+    app_version = str(settings.get("version", "unknown"))
     server_stats = None
     server_profile = None
+    server_customizations = None
+    server_referrals = None
+    server_device = None
+
     if token and not args.no_api:
-        print("Fetching server stats…")
-        server_stats = fetch_server_stats(token)
-        server_profile = fetch_server_profile(token)
+        endpoints = [
+            ("stats",           lambda: fetch_server_stats(token)),
+            ("profile",         lambda: fetch_server_profile(token)),
+            ("customizations",  lambda: fetch_transcript_customizations(token)),
+            ("referrals",       lambda: fetch_referral_stats(token)),
+            ("device settings", lambda: fetch_device_settings(token, device_id, app_version) if device_id else None),
+        ]
+        for name, fn in endpoints:
+            print(f"  Fetching {name}…", end=" ", flush=True)
+            try:
+                result = fn()
+                print("✓" if result else "–")
+            except Exception:
+                result = None
+                print("✗")
+            if name == "stats":         server_stats = result
+            elif name == "profile":     server_profile = result
+            elif name == "customizations": server_customizations = result
+            elif name == "referrals":   server_referrals = result
+            elif name == "device settings": server_device = result
 
     # Print human-readable summary
     print_summary(summary, daily, devices)
@@ -332,6 +390,12 @@ def main():
         write_json(out / "server_stats.json", server_stats)
     if server_profile:
         write_json(out / "server_profile.json", server_profile)
+    if server_customizations:
+        write_json(out / "server_customizations.json", server_customizations)
+    if server_referrals:
+        write_json(out / "server_referrals.json", server_referrals)
+    if server_device:
+        write_json(out / "server_device_settings.json", server_device)
 
     # Optional CSV
     if args.csv:
