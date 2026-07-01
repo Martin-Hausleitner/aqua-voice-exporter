@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// Self-contained Aqua Voice STT engine panel. Talks to the local aqua-stt-bridge
-// (see aqua-voice-exporter/aqua-stt-bridge) which forwards audio to Aqua's real
-// /retranscribe endpoint and returns real transcripts. Kept in its own file so the
-// ws:29 live WIP (LivePage/live-bridge) is only extended additively.
+// Engine-aware STT test panel. Talks to the local aqua-stt-bridge
+// (see aqua-voice-exporter/aqua-stt-bridge). For "aqua" it POSTs /transcribe
+// (Aqua Voice avalon-v1.1, cloud); for "whisper" it POSTs /whisper (local mlx
+// whisper-large-v3-turbo). Both return real transcripts of the same sample so the
+// engine selector is provably wired to two real, different engines.
+//
+// Kept in its own file so the ws:29 live WIP is only extended additively.
 
 const DEFAULT_BRIDGE_URL = "http://127.0.0.1:4182";
 
@@ -15,30 +18,59 @@ export function getAquaBridgeUrl(): string {
   }
 }
 
+type Engine = "aqua" | "whisper";
+
 interface AquaSample {
   name: string;
   bytes: number;
   timestamp: string;
 }
-interface AquaResult {
+interface EngineResult {
   transcription: string;
   model: string;
   sample?: string;
   duration?: number;
   latencyMs?: number;
+  engine?: string;
 }
 
-export function AquaEnginePanel() {
+const THEME: Record<Engine, { name: string; accent: string; border: string; bg: string; badge: string; text: string }> = {
+  aqua: {
+    name: "Aqua Voice",
+    accent: "avalon-v1.1 · cloud",
+    border: "border-emerald-800/60",
+    bg: "bg-emerald-950/20",
+    badge: "bg-emerald-800/60 text-emerald-200",
+    text: "text-emerald-200",
+  },
+  whisper: {
+    name: "Whisper",
+    accent: "large-v3-turbo · local",
+    border: "border-sky-800/60",
+    bg: "bg-sky-950/20",
+    badge: "bg-sky-800/60 text-sky-200",
+    text: "text-sky-200",
+  },
+};
+
+export function EnginePanel({ engine }: { engine: Engine }) {
+  const theme = THEME[engine];
   const [bridgeUrl, setBridgeUrl] = useState(getAquaBridgeUrl());
   const [health, setHealth] = useState<Record<string, unknown> | null>(null);
   const [samples, setSamples] = useState<AquaSample[]>([]);
   const [sample, setSample] = useState("");
-  const [result, setResult] = useState<AquaResult | null>(null);
+  const [result, setResult] = useState<EngineResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+
+  // reset the shown result when the engine changes so we never mislabel
+  useEffect(() => {
+    setResult(null);
+    setError(null);
+  }, [engine]);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -48,10 +80,8 @@ export function AquaEnginePanel() {
       const s = await (await fetch(`${bridgeUrl}/samples`)).json();
       setSamples(s.data ?? []);
       if (!sample && s.data?.[0]) setSample(s.data[0].name);
-    } catch (e) {
-      setError(
-        `Cannot reach Aqua bridge at ${bridgeUrl}. Start it: node aqua-stt-bridge/server.mjs`
-      );
+    } catch {
+      setError(`Cannot reach STT bridge at ${bridgeUrl}. Start it: node aqua-stt-bridge/server.mjs`);
     }
   }, [bridgeUrl, sample]);
 
@@ -64,12 +94,13 @@ export function AquaEnginePanel() {
     setBusy(true);
     setError(null);
     try {
-      const r = await fetch(`${bridgeUrl}/transcribe`, {
+      const path = engine === "aqua" ? "/transcribe" : "/whisper";
+      const r = await fetch(`${bridgeUrl}${path}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ sample }),
       });
-      const out = (await r.json()) as AquaResult & { error?: string };
+      const out = (await r.json()) as EngineResult & { error?: string };
       if (out.error) throw new Error(out.error);
       setResult(out);
     } catch (e) {
@@ -77,7 +108,7 @@ export function AquaEnginePanel() {
     } finally {
       setBusy(false);
     }
-  }, [bridgeUrl, sample]);
+  }, [bridgeUrl, sample, engine]);
 
   const toggleRecord = useCallback(async () => {
     if (recording) {
@@ -101,7 +132,7 @@ export function AquaEnginePanel() {
             headers: { "content-type": rec.mimeType || "audio/webm" },
             body: blob,
           });
-          const out = (await r.json()) as AquaResult & { error?: string };
+          const out = (await r.json()) as EngineResult & { error?: string };
           if (out.error) throw new Error(out.error);
           setResult(out);
         } catch (e) {
@@ -113,38 +144,39 @@ export function AquaEnginePanel() {
       recorderRef.current = rec;
       rec.start();
       setRecording(true);
-    } catch (e) {
+    } catch {
       setError("Microphone not available");
     }
   }, [bridgeUrl, recording]);
 
-  const online = !!health?.hasToken;
+  const online = engine === "aqua" ? !!health?.hasToken : !!health?.whisper;
 
   return (
-    <div className="flex-none rounded-md border border-emerald-800/60 bg-emerald-950/20 p-3">
+    <div className={`flex-none rounded-md border ${theme.border} ${theme.bg} p-3`} data-engine={engine}>
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-emerald-200">Aqua Voice engine</h2>
+        <h2 className={`text-sm font-semibold ${theme.text}`}>{theme.name} engine</h2>
         <span
           className={`rounded px-2 py-0.5 text-[10px] ${
-            online ? "bg-emerald-800/60 text-emerald-200" : "bg-red-900/60 text-red-200"
+            online ? theme.badge : "bg-red-900/60 text-red-200"
           }`}
         >
-          {online ? `online · ${String(health?.model ?? "avalon-v1.1")}` : "bridge offline"}
+          {online ? `online · ${theme.accent}` : "bridge offline"}
         </span>
       </div>
 
-      <p className="mb-2 text-[11px] leading-5 text-emerald-300/80">
-        Live transcription via Aqua Voice (<code>realtime.aquavoice.com</code>). Pick a real sample or
-        record the mic — the real Aqua transcript appears below.
+      <p className="mb-2 text-[11px] leading-5 text-gray-400">
+        {engine === "aqua"
+          ? "Transcribe via Aqua Voice (realtime.aquavoice.com). Pick a real sample or record the mic."
+          : "Transcribe via local Whisper (mlx large-v3-turbo). Pick a real sample."}
       </p>
 
       <div className="grid gap-2">
-        <label className="text-xs text-emerald-400/80">
+        <label className="text-xs text-gray-500">
           Sample audio
           <select
             value={sample}
             onChange={(e) => setSample(e.target.value)}
-            className="mt-1 w-full rounded-md border border-emerald-800 bg-gray-900 px-2 py-2 text-sm text-gray-100 outline-none"
+            className="mt-1 w-full rounded-md border border-gray-700 bg-gray-900 px-2 py-2 text-sm text-gray-100 outline-none"
           >
             {samples.map((s) => (
               <option key={s.name} value={s.name}>
@@ -159,25 +191,25 @@ export function AquaEnginePanel() {
             type="button"
             onClick={transcribeSample}
             disabled={busy || !sample || !online}
-            className="flex-1 rounded-md border border-emerald-700 bg-emerald-800/40 px-3 py-2 text-sm text-emerald-100 disabled:opacity-40"
+            className="flex-1 rounded-md border border-gray-600 bg-gray-800/60 px-3 py-2 text-sm text-gray-100 disabled:opacity-40"
           >
-            {busy ? "Transcribing…" : "Transcribe sample"}
+            {busy ? "Transcribing…" : `Transcribe via ${theme.name}`}
           </button>
-          <button
-            type="button"
-            onClick={toggleRecord}
-            disabled={busy && !recording}
-            className={`flex-1 rounded-md border px-3 py-2 text-sm disabled:opacity-40 ${
-              recording
-                ? "border-red-600 bg-red-800/40 text-red-100"
-                : "border-emerald-700 bg-emerald-800/40 text-emerald-100"
-            }`}
-          >
-            {recording ? "Stop & transcribe" : "Record mic"}
-          </button>
+          {engine === "aqua" && (
+            <button
+              type="button"
+              onClick={toggleRecord}
+              disabled={busy && !recording}
+              className={`flex-1 rounded-md border px-3 py-2 text-sm disabled:opacity-40 ${
+                recording ? "border-red-600 bg-red-800/40 text-red-100" : "border-gray-600 bg-gray-800/60 text-gray-100"
+              }`}
+            >
+              {recording ? "Stop & transcribe" : "Record mic"}
+            </button>
+          )}
         </div>
 
-        <label className="text-xs text-emerald-400/70">
+        <label className="text-xs text-gray-500">
           Bridge URL
           <input
             value={bridgeUrl}
@@ -189,7 +221,7 @@ export function AquaEnginePanel() {
                 /* ignore */
               }
             }}
-            className="mt-1 w-full rounded-md border border-emerald-900 bg-gray-900 px-2 py-1.5 text-xs text-gray-300 outline-none"
+            className="mt-1 w-full rounded-md border border-gray-800 bg-gray-900 px-2 py-1.5 text-xs text-gray-300 outline-none"
           />
         </label>
       </div>
@@ -201,9 +233,11 @@ export function AquaEnginePanel() {
       )}
 
       {result && (
-        <div className="mt-3 rounded-md border border-emerald-800/60 bg-gray-950 p-3">
-          <div className="mb-1 flex items-center gap-2 text-[10px] text-emerald-400/80">
-            <span className="rounded bg-emerald-800/60 px-1.5 py-0.5">Aqua · {result.model}</span>
+        <div className="mt-3 rounded-md border border-gray-800 bg-gray-950 p-3">
+          <div className="mb-1 flex flex-wrap items-center gap-2 text-[10px] text-gray-400">
+            <span className={`rounded px-1.5 py-0.5 ${theme.badge}`}>
+              {result.engine ?? engine} · {result.model}
+            </span>
             {result.sample && <span>{result.sample}</span>}
             {typeof result.latencyMs === "number" && <span>{result.latencyMs} ms</span>}
             {typeof result.duration === "number" && <span>{result.duration.toFixed(1)} s audio</span>}

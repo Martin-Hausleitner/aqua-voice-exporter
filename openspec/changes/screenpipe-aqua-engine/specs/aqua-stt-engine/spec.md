@@ -38,6 +38,12 @@ in-flight ws:29 live-bridge WIP.
 - **THEN** the UI shows Aqua as the active engine and live transcription is produced by the Aqua
   bridge rather than Whisper
 
+#### Scenario: Visible selector proven against both engines
+- **WHEN** the user switches the visible engine dropdown between "Whisper" and "Aqua Voice" and
+  transcribes the same audio sample with each
+- **THEN** each engine renders its own real transcript (different output), demonstrating the selector
+  routes to two distinct, real engines
+
 #### Scenario: ws:29 WIP preserved
 - **WHEN** the Aqua engine change is applied
 - **THEN** the ws:29 untracked WIP files (`packages/live-bridge/`, `LivePage.tsx`, `App.tsx`,

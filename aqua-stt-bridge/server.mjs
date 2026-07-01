@@ -12,6 +12,30 @@ import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
+// Local Whisper (Apple-Silicon mlx-whisper, large-v3-turbo — same model family Screenpipe
+// defaults to). Used so the engine selector can be proven against BOTH engines even when the
+// Screenpipe backend isn't running. Requires `uvx` on PATH.
+const WHISPER_MODEL = process.env.AQUA_WHISPER_MODEL ?? "mlx-community/whisper-large-v3-turbo";
+function whisperAvailable() {
+  return spawnSync("uvx", ["--version"], { stdio: "ignore" }).status === 0;
+}
+function transcribeWhisperLocal(wavPath, language) {
+  const dir = mkdtempSync(join(tmpdir(), "aqua-wh-"));
+  try {
+    const args = ["--from", "mlx-whisper", "mlx_whisper", wavPath, "--model", WHISPER_MODEL,
+      "--output-dir", dir, "--output-format", "json"];
+    if (language && language !== "auto") args.push("--language", language);
+    const r = spawnSync("uvx", args, { encoding: "utf8", timeout: 600000 });
+    if (r.status !== 0) throw new Error(`mlx-whisper failed: ${(r.stderr || "").slice(-200)}`);
+    const outFile = readdirSync(dir).find((f) => f.endsWith(".json"));
+    if (!outFile) throw new Error("mlx-whisper produced no output");
+    const parsed = JSON.parse(readFileSync(join(dir, outFile), "utf8"));
+    return (parsed.text || "").trim();
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+}
+
 const PORT = Number(process.env.AQUA_BRIDGE_PORT ?? 4182);
 const ENDPOINT = process.env.AQUA_ENDPOINT ?? "https://realtime.aquavoice.com/retranscribe";
 const DATA_DIR = process.env.AQUA_DATA_DIR ?? join(homedir(), "Library", "Application Support", "Aqua Voice");
@@ -106,10 +130,22 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/health") {
       let hasToken = false, model = "avalon-v1.1";
       try { hasToken = !!loadSettings().token; model = defaultModel(); } catch {}
-      return jsonRes(res, { ok: true, engine: "aqua", endpoint: ENDPOINT, model, language: defaultLanguage(), hasToken, samples: listSamples().length });
+      return jsonRes(res, { ok: true, engine: "aqua", endpoint: ENDPOINT, model, language: defaultLanguage(), hasToken, samples: listSamples().length, whisper: whisperAvailable(), whisperModel: "whisper-large-v3-turbo" });
     }
 
     if (url.pathname === "/samples") return jsonRes(res, { data: listSamples() });
+
+    // Local Whisper (mlx large-v3-turbo) on a real sample — proves the "Whisper" engine path.
+    if (url.pathname === "/whisper" && req.method === "POST") {
+      const body = JSON.parse((await readBody(req)).toString() || "{}");
+      const name = body.sample;
+      if (!name || !/^AQ_.*\.wav$/.test(name)) return jsonRes(res, { error: "bad_sample" }, 400);
+      const p = join(AUDIO_DIR, name);
+      if (!existsSync(p)) return jsonRes(res, { error: "sample_not_found", name }, 404);
+      const t0 = Date.now();
+      const text = transcribeWhisperLocal(p, url.searchParams.get("language") || defaultLanguage());
+      return jsonRes(res, { engine: "whisper", model: "whisper-large-v3-turbo", sample: name, transcription: text, latencyMs: Date.now() - t0 });
+    }
 
     if (url.pathname === "/transcribe" && req.method === "POST") {
       const ct = (req.headers["content-type"] || "").toLowerCase();
