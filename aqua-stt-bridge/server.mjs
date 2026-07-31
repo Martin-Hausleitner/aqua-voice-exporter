@@ -49,8 +49,14 @@ function loadSettings() {
 
 // Token is fetched fresh per request and kept only in local scope — never logged.
 function getToken() {
+  if (process.env.AQUA_TOKEN) return process.env.AQUA_TOKEN;
+  const secretsFile = join(homedir(), ".secrets", "aqua-voice.env");
+  if (existsSync(secretsFile)) {
+    const match = readFileSync(secretsFile, "utf8").match(/AQUA_TOKEN=(.+)/);
+    if (match && match[1]) return match[1].trim();
+  }
   const t = loadSettings().token;
-  if (!t) throw new Error("No Aqua JWT in settings.json (field 'token'). Is Aqua Voice signed in?");
+  if (!t) throw new Error("No Aqua JWT found in env, .secrets, or settings.json. Is Aqua Voice signed in?");
   return t;
 }
 
@@ -129,7 +135,7 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/health") {
       let hasToken = false, model = "avalon-v1.1";
-      try { hasToken = !!loadSettings().token; model = defaultModel(); } catch {}
+      try { hasToken = !!getToken(); model = defaultModel(); } catch {}
       return jsonRes(res, { ok: true, engine: "aqua", endpoint: ENDPOINT, model, language: defaultLanguage(), hasToken, samples: listSamples().length, whisper: whisperAvailable(), whisperModel: "whisper-large-v3-turbo" });
     }
 
@@ -177,12 +183,34 @@ const server = createServer(async (req, res) => {
       return jsonRes(res, { engine: "aqua", model: out.model || model || defaultModel(), transcription: out.transcription, duration: out.duration, latencyMs: Date.now() - t0 });
     }
 
+    if (url.pathname === "/search") {
+      const q = (url.searchParams.get("q") || "").toLowerCase();
+      let history = [];
+      try { history = loadSettings().history || []; } catch (err) {}
+      const filtered = q ? history.filter(h => h.transcription && h.transcription.toLowerCase().includes(q)) : history;
+      return jsonRes(res, { data: filtered });
+    }
+
     return jsonRes(res, { error: "not_found", path: url.pathname }, 404);
   } catch (err) {
     return jsonRes(res, { error: "bridge_error", message: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
 
-server.listen(PORT, "127.0.0.1", () => {
+server.listen(PORT, "127.0.0.1", async () => {
   console.log(`aqua-stt-bridge listening on http://127.0.0.1:${PORT}  → ${ENDPOINT} (model ${defaultModel()})`);
+  try {
+    const token = getToken();
+    const res = await fetch("https://core.aquavoice.com/users/profile/", {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) {
+      console.error(`\n[FATAL] Aqua API rejected token (HTTP ${res.status}). Key is invalid or expired.`);
+      process.exit(1);
+    }
+    console.log("✓ Aqua token validated successfully.");
+  } catch (err) {
+    console.error(`\n[FATAL] Failed to validate Aqua token: ${err.message}`);
+    process.exit(1);
+  }
 });

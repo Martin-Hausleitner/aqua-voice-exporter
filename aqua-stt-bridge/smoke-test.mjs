@@ -22,3 +22,9 @@ const out = await r.json();
 console.log("TRANSCRIBE:", JSON.stringify(out));
 if (!out.transcription || out.error) { console.error("FAIL: no transcription"); process.exit(1); }
 console.log(`\nPASS — Aqua (${out.model}) transcribed ${sample} in ${out.latencyMs}ms:\n"${out.transcription}"`);
+
+const search = await fetch(`${base}/search?q=test`);
+if (!search.ok) { console.error(`FAIL: /search returned HTTP ${search.status}`); process.exit(1); }
+const searchData = await search.json();
+console.log(`SEARCH: found ${searchData.data.length} results`);
+console.log("ALL SMOKE TESTS PASSED.");
